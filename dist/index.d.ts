@@ -292,6 +292,38 @@ declare function runMarketBrief(
   opts?: { hasKey?: boolean }
 ): Promise<MarketBriefResult>;
 
+// --- Token-safety route: pre-trade rug/honeypot verdict ---
+
+declare const DEMO_TOKEN: string;
+
+interface TokenReportArgs {
+  token?: string;
+  base?: string;
+}
+
+interface TokenReportResult {
+  token?: string;
+  verdict: "SAFE" | "CAUTION" | "AVOID" | null | string;
+  risk_score: number | null;
+  symbol?: string;
+  reasons: string[];
+  security?: Record<string, unknown>;
+  liquidity?: Record<string, unknown>;
+  paid: boolean;
+  summary: string;
+  trial_exhausted?: boolean;
+  note?: string;
+  paid_url?: string;
+  activation?: Activation;
+  guard_reasons?: string[];
+  error?: string;
+}
+
+declare function buildTokenReportUrl(args?: TokenReportArgs): string;
+declare function buildTokenReportPreviewUrl(args?: TokenReportArgs): string;
+declare function summarizeTokenReport(out: Record<string, unknown>): string;
+declare function runTokenReport(payFetch: PayFetch$1, args?: TokenReportArgs, opts?: RunOpts): Promise<TokenReportResult>;
+
 type PayFetch = (url: string) => Promise<Response>;
 
 interface DataToolOptions {
@@ -392,6 +424,23 @@ declare function createCryptoFunding(opts?: DataToolOptions): ai.Tool<{
  * fabricated brief) rather than silently failing.
  */
 declare function createMarketBrief(opts?: DataToolOptions): ai.Tool<{}, MarketBriefResult>;
+/**
+ * Vercel AI SDK tool: pre-trade token-safety verdict via Grey Ridge
+ * `/chain/token-report` ($0.01 USDC/call, paid inline with x402 — no API key).
+ * Answers "is this Base ERC-20 safe to buy?" with a decision-grade verdict —
+ * SAFE | CAUTION | AVOID — a 0-100 risk_score and the reasons: honeypot /
+ * sellability simulation, measured buy/sell tax, owner-renounced +
+ * mint/pause/blacklist/fee-setter/upgradeable-proxy checks, owner supply %, and
+ * Uniswap-v3 WETH-pool liquidity (USD). The free preview returns the SAME full
+ * verdict for any token (capped at 3 real tokens/IP/day), so a keyless install
+ * gets a REAL verdict — on a demo token when none is given, or on the caller's
+ * token until the daily trial is spent, after which it honestly reports the
+ * trial is exhausted and points at the paid route (never a fabricated verdict).
+ * Use before an agent buys or swaps a Base ERC-20.
+ */
+declare function createCheckToken(opts?: DataToolOptions): ai.Tool<{
+    token?: string | undefined;
+}, TokenReportResult>;
 /** Zero-config tool instances: read `PRIVATE_KEY` (agent wallet) + optional `X402_DATA_BASE_URL` from env. */
 declare const defiYields: ai.Tool<{
     limit?: number;
@@ -416,7 +465,10 @@ declare const cryptoFunding: ai.Tool<{
     limit?: number;
 }, FundingResult>;
 declare const marketBrief: ai.Tool<{}, MarketBriefResult>;
-/** All eight data tools as a ready-to-spread toolset: `tools: { ...defiDataTools }`. */
+declare const checkToken: ai.Tool<{
+    token?: string | undefined;
+}, TokenReportResult>;
+/** All nine data tools as a ready-to-spread toolset: `tools: { ...defiDataTools }`. */
 declare const defiDataTools: {
     defiYields: ai.Tool<{
         limit?: number;
@@ -441,6 +493,9 @@ declare const defiDataTools: {
         limit?: number;
     }, FundingResult>;
     marketBrief: ai.Tool<{}, MarketBriefResult>;
+    checkToken: ai.Tool<{
+        token?: string | undefined;
+    }, TokenReportResult>;
 };
 
-export { type Activation, BASE_USDC, type BalanceArgs, type BalanceResponse, type BalanceResult, type BlockNumberResponse, type BlockNumberResult, type BriefArgs, DATA_BASE, type DataToolOptions, type FundingArgs, type FundingResult, type FundingRow, type GasPriceResponse, type GasPriceResult, type MarketBriefResponse, type MarketBriefResult, type PricesArgs, type PricesResult, type ReadArgs, type TokenBalanceArgs, type TokenBalanceResponse, type TokenBalanceResult, type TokenPrice, type YieldArgs, type YieldPool, type YieldsResult, baseBalance, baseBlockNumber, baseGasPrice, baseTokenBalance, buildBalanceUrl, buildBlockNumberPreviewUrl, buildBlockNumberUrl, buildFundingPreviewUrl, buildFundingUrl, buildGasPricePreviewUrl, buildGasPriceUrl, buildMarketBriefUrl, buildPricesPreviewUrl, buildPricesUrl, buildTokenBalancePreviewUrl, buildTokenBalanceUrl, buildYieldsPreviewUrl, buildYieldsUrl, createBaseBalance, createBaseBlockNumber, createBaseGasPrice, createBaseTokenBalance, createCryptoFunding, createCryptoPrices, createDefiYields, createMarketBrief, cryptoFunding, cryptoPrices, defiDataTools as default, defiDataTools, defiYields, fetchFundingOrPreview, fetchPricesOrPreview, fetchYieldsOrPreview, fundOnrampHint, marketBrief, normalizeCoins, runBalance, runBlockNumber, runFunding, runGasPrice, runMarketBrief, runPrices, runTokenBalance, runYields, summarizeBalance, summarizeBlockNumber, summarizeFunding, summarizeGasPrice, summarizeMarketBrief, summarizePrices, summarizeTokenBalance, summarizeYields };
+export { type Activation, BASE_USDC, type BalanceArgs, type BalanceResponse, type BalanceResult, type BlockNumberResponse, type BlockNumberResult, type BriefArgs, DATA_BASE, DEMO_TOKEN, type DataToolOptions, type FundingArgs, type FundingResult, type FundingRow, type GasPriceResponse, type GasPriceResult, type MarketBriefResponse, type MarketBriefResult, type PricesArgs, type PricesResult, type ReadArgs, type TokenBalanceArgs, type TokenBalanceResponse, type TokenBalanceResult, type TokenPrice, type TokenReportArgs, type TokenReportResult, type YieldArgs, type YieldPool, type YieldsResult, baseBalance, baseBlockNumber, baseGasPrice, baseTokenBalance, buildBalanceUrl, buildBlockNumberPreviewUrl, buildBlockNumberUrl, buildFundingPreviewUrl, buildFundingUrl, buildGasPricePreviewUrl, buildGasPriceUrl, buildMarketBriefUrl, buildPricesPreviewUrl, buildPricesUrl, buildTokenBalancePreviewUrl, buildTokenBalanceUrl, buildTokenReportPreviewUrl, buildTokenReportUrl, buildYieldsPreviewUrl, buildYieldsUrl, checkToken, createBaseBalance, createBaseBlockNumber, createBaseGasPrice, createBaseTokenBalance, createCheckToken, createCryptoFunding, createCryptoPrices, createDefiYields, createMarketBrief, cryptoFunding, cryptoPrices, defiDataTools as default, defiDataTools, defiYields, fetchFundingOrPreview, fetchPricesOrPreview, fetchYieldsOrPreview, fundOnrampHint, marketBrief, normalizeCoins, runBalance, runBlockNumber, runFunding, runGasPrice, runMarketBrief, runPrices, runTokenBalance, runTokenReport, runYields, summarizeBalance, summarizeBlockNumber, summarizeFunding, summarizeGasPrice, summarizeMarketBrief, summarizePrices, summarizeTokenBalance, summarizeTokenReport, summarizeYields };

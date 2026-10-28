@@ -436,6 +436,96 @@ async function runMarketBrief(payFetch, args = {}, { hasKey = true } = {}) {
     return { error: msg, paid: false, summary: `ERROR: ${msg}` };
   }
 }
+var DEMO_TOKEN = "0x940181a94a35a4569e4529a3cdfb74e38fd98631";
+function buildTokenReportUrl({ token = DEMO_TOKEN, base = DATA_BASE } = {}) {
+  if (!ADDR_RE.test(String(token || ""))) throw new Error(`invalid Base token address: ${token}`);
+  const qs = new URLSearchParams({ token });
+  return `${base}/chain/token-report?${qs.toString()}`;
+}
+function buildTokenReportPreviewUrl({ token = DEMO_TOKEN, base = DATA_BASE } = {}) {
+  if (!ADDR_RE.test(String(token || ""))) throw new Error(`invalid Base token address: ${token}`);
+  const qs = new URLSearchParams({ token });
+  return `${base}/chain/token-report/preview?${qs.toString()}`;
+}
+function summarizeTokenReport(out) {
+  if (!out || typeof out !== "object") return "no token report";
+  if (out.trial_exhausted) return "token-safety free trial exhausted for today (3/day/IP) \u2014 pay $0.01 for any token";
+  if (out.verdict == null) return out.note ? `token report unavailable \u2014 ${out.note}` : "no token report";
+  const sym = out.token_meta && out.token_meta.symbol || out.symbol || "token";
+  const bits = [`${sym}: ${out.verdict}`];
+  if (typeof out.risk_score === "number") bits.push(`risk ${out.risk_score}/100`);
+  const reasons = Array.isArray(out.reasons) ? out.reasons.slice(0, 3) : [];
+  if (reasons.length) bits.push(reasons.join("; "));
+  return bits.join(" \xB7 ");
+}
+function shapeTokenReport(out, { paid }) {
+  const symbol = out && out.token_meta && out.token_meta.symbol || void 0;
+  const result = {
+    token: out && out.token,
+    verdict: (out && out.verdict) ?? null,
+    risk_score: out && typeof out.risk_score === "number" ? out.risk_score : null,
+    symbol,
+    reasons: Array.isArray(out && out.reasons) ? out.reasons.slice(0, 5) : [],
+    security: out && out.security,
+    liquidity: out && out.liquidity,
+    paid
+  };
+  result.summary = summarizeTokenReport({ ...out, ...result });
+  return result;
+}
+async function runTokenReport(payFetch, args = {}, { hasKey = true, previewFetch } = {}) {
+  const resolved = { ...args, token: args.token || DEMO_TOKEN };
+  let paidUrl;
+  let previewUrl;
+  try {
+    paidUrl = buildTokenReportUrl(resolved);
+    previewUrl = buildTokenReportPreviewUrl(resolved);
+  } catch (err) {
+    const msg = `chain/token-report unavailable: ${err?.message || err}`;
+    return { error: msg, token: args.token, verdict: null, risk_score: null, reasons: [], paid: false, summary: `ERROR: ${msg}` };
+  }
+  const takePreview = async (reason) => {
+    const f = previewFetch || (typeof fetch !== "undefined" ? fetch : null);
+    if (!f) throw new Error("no fetch available");
+    const res = await f(previewUrl);
+    const body = await res.json();
+    if (res.status === 429 || body?.trial?.real_token_checks_left_today === 0) {
+      return {
+        token: resolved.token,
+        verdict: null,
+        risk_score: null,
+        reasons: [],
+        trial_exhausted: true,
+        note: body?.error || "free real-token trial exhausted (3/day/IP)",
+        paid_url: body?.paid_url || paidUrl,
+        paid: false,
+        summary: summarizeTokenReport({ trial_exhausted: true }),
+        activation: activationBlock(reason, { paidUrl, priceUsdc: "0.01" }),
+        guard_reasons: [fundOnrampHint()]
+      };
+    }
+    if (!res.ok && res.status !== 200) throw new Error(`preview failed: HTTP ${res.status}`);
+    const shaped = shapeTokenReport(body, { paid: false });
+    shaped.activation = activationBlock(reason, { paidUrl, priceUsdc: "0.01" });
+    shaped.guard_reasons = [fundOnrampHint()];
+    return shaped;
+  };
+  try {
+    if (hasKey) {
+      const res = await payFetch(paidUrl);
+      if (res.ok || res.status === 200) {
+        const out = await res.json();
+        return shapeTokenReport(out, { paid: true });
+      }
+      const reason = res.status === 402 ? "wallet not funded (paid /chain/token-report returned 402)" : `paid /chain/token-report returned HTTP ${res.status}`;
+      return await takePreview(reason);
+    }
+    return await takePreview("no PRIVATE_KEY configured \u2014 free preview returns the full verdict (capped 3 real tokens/IP/day)");
+  } catch (err) {
+    const msg = `chain/token-report unavailable: ${err?.message || err}`;
+    return { error: msg, token: resolved.token, verdict: null, risk_score: null, reasons: [], paid: false, summary: `ERROR: ${msg}` };
+  }
+}
 
 // src/tool.ts
 function envKey() {
@@ -535,6 +625,16 @@ function createMarketBrief(opts = {}) {
     execute: async () => runMarketBrief(payFetch, { base }, { hasKey })
   });
 }
+function createCheckToken(opts = {}) {
+  const { base, payFetch, hasKey } = resolve(opts);
+  return tool({
+    description: "Pre-trade token-safety verdict for a Base ERC-20 via Grey Ridge /chain/token-report ($0.01 USDC/call, paid inline with x402 \u2014 no API key). Returns SAFE/CAUTION/AVOID, a 0-100 risk_score and reasons: honeypot/sellability simulation, measured buy/sell tax, owner-renounced + mint/pause/blacklist/fee-setter/upgradeable-proxy checks, owner supply %, and Uniswap-v3 WETH-pool liquidity (USD). Call before buying or swapping a Base ERC-20 to avoid a rug/honeypot.",
+    inputSchema: z.object({
+      token: z.string().optional().describe("0x-prefixed Base ERC-20 contract to check (40 hex chars). Omit to probe a demo token.")
+    }),
+    execute: async ({ token }) => runTokenReport(payFetch, { token, base }, { hasKey })
+  });
+}
 var defiYields = createDefiYields({ privateKey: envKey(), base: envBase() });
 var cryptoPrices = createCryptoPrices({ privateKey: envKey(), base: envBase() });
 var baseBalance = createBaseBalance({ privateKey: envKey(), base: envBase() });
@@ -543,6 +643,7 @@ var baseBlockNumber = createBaseBlockNumber({ privateKey: envKey(), base: envBas
 var baseTokenBalance = createBaseTokenBalance({ privateKey: envKey(), base: envBase() });
 var cryptoFunding = createCryptoFunding({ privateKey: envKey(), base: envBase() });
 var marketBrief = createMarketBrief({ privateKey: envKey(), base: envBase() });
+var checkToken = createCheckToken({ privateKey: envKey(), base: envBase() });
 var defiDataTools = {
   defiYields,
   cryptoPrices,
@@ -551,11 +652,13 @@ var defiDataTools = {
   baseBlockNumber,
   baseTokenBalance,
   cryptoFunding,
-  marketBrief
+  marketBrief,
+  checkToken
 };
 export {
   BASE_USDC,
   DATA_BASE,
+  DEMO_TOKEN,
   baseBalance,
   baseBlockNumber,
   baseGasPrice,
@@ -572,12 +675,16 @@ export {
   buildPricesUrl,
   buildTokenBalancePreviewUrl,
   buildTokenBalanceUrl,
+  buildTokenReportPreviewUrl,
+  buildTokenReportUrl,
   buildYieldsPreviewUrl,
   buildYieldsUrl,
+  checkToken,
   createBaseBalance,
   createBaseBlockNumber,
   createBaseGasPrice,
   createBaseTokenBalance,
+  createCheckToken,
   createCryptoFunding,
   createCryptoPrices,
   createDefiYields,
@@ -600,6 +707,7 @@ export {
   runMarketBrief,
   runPrices,
   runTokenBalance,
+  runTokenReport,
   runYields,
   summarizeBalance,
   summarizeBlockNumber,
@@ -608,6 +716,7 @@ export {
   summarizeMarketBrief,
   summarizePrices,
   summarizeTokenBalance,
+  summarizeTokenReport,
   summarizeYields
 };
 //# sourceMappingURL=index.js.map
