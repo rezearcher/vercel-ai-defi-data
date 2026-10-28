@@ -572,6 +572,171 @@ async function runTokenReport(payFetch, args = {}, { hasKey = true, previewFetch
     return { error: msg, token: resolved.token, verdict: null, risk_score: null, reasons: [], paid: false, summary: `ERROR: ${msg}` };
   }
 }
+function buildYieldEntryVerdictUrl({ pool, token, base = DATA_BASE } = {}) {
+  const p = String(pool || "").trim();
+  if (!p) throw new Error("pool required \u2014 the 'pool' field (DefiLlama poolId) from /defi/yields");
+  const qs = new URLSearchParams({ pool: p });
+  if (token && ADDR_RE.test(String(token))) qs.set("token", String(token));
+  return `${base}/defi/yield-entry-verdict?${qs.toString()}`;
+}
+function buildYieldEntryVerdictPreviewUrl({ base = DATA_BASE } = {}) {
+  return `${base}/defi/yield-entry-verdict/preview`;
+}
+function summarizeYieldEntryVerdict(out) {
+  if (!out || typeof out !== "object") return "no yield-entry verdict";
+  if (out.verdict == null) return out.note ? `yield-entry verdict unavailable \u2014 ${out.note}` : "no yield-entry verdict";
+  const label = out.symbol || out.project || "pool";
+  const bits = [`${label}: ${out.verdict}`];
+  if (typeof out.risk_score === "number") bits.push(`risk ${out.risk_score}/100`);
+  if (typeof out.apy === "number") bits.push(`APY ${out.apy.toFixed(2)}%`);
+  const reasons = Array.isArray(out.reasons) ? out.reasons.slice(0, 2).map((r) => typeof r === "string" ? r : r && (r.detail || r.code)).filter(Boolean) : [];
+  if (reasons.length) bits.push(reasons.join("; "));
+  if (out.is_sample) bits.push("(SAMPLE \u2014 pay for your pool)");
+  return bits.join(" \xB7 ");
+}
+function shapeYieldEntryVerdict(out, { paid, isSample }) {
+  const v = out && typeof out === "object" ? out : {};
+  const result = {
+    pool: v.pool,
+    project: v.project,
+    chain: v.chain,
+    symbol: v.symbol,
+    verdict: v.verdict ?? null,
+    risk_score: typeof v.risk_score === "number" ? v.risk_score : null,
+    reasons: Array.isArray(v.reasons) ? v.reasons.slice(0, 5) : [],
+    apy: typeof v.apy === "number" ? v.apy : null,
+    apyPct7D: v.apyPct7D ?? null,
+    apyPct30D: v.apyPct30D ?? null,
+    predicted: v.predicted ?? null,
+    tvlUsd: v.tvlUsd ?? null,
+    token_safety_hint: v.token_safety_hint,
+    is_sample: !!isSample,
+    paid
+  };
+  result.summary = summarizeYieldEntryVerdict(result);
+  return result;
+}
+async function runYieldEntryVerdict(payFetch, args = {}, { hasKey = true, previewFetch } = {}) {
+  const pool = String(args.pool || "").trim();
+  if (!pool) {
+    const msg = "pool required \u2014 pass the 'pool' field (DefiLlama poolId) returned by runYields / GET /defi/yields.";
+    return { error: msg, pool: void 0, verdict: null, risk_score: null, reasons: [], apy: null, is_sample: false, paid: false, summary: `ERROR: ${msg}` };
+  }
+  let paidUrl;
+  try {
+    paidUrl = buildYieldEntryVerdictUrl({ ...args, pool });
+  } catch (err) {
+    const msg = `defi/yield-entry-verdict unavailable: ${err?.message || err}`;
+    return { error: msg, pool, verdict: null, risk_score: null, reasons: [], apy: null, is_sample: false, paid: false, summary: `ERROR: ${msg}` };
+  }
+  const previewUrl = buildYieldEntryVerdictPreviewUrl(args);
+  const takePreview = async (reason) => {
+    const out = await plainGet(previewFetch, previewUrl);
+    const sample = out && out.preview || {};
+    const shaped = shapeYieldEntryVerdict(sample, { paid: false, isSample: true });
+    shaped.note = `Free preview is the current top-TVL pool verdict \u2014 a SAMPLE, not pool ${pool}. The go/no-go for YOUR pool is the paid route ($0.01).`;
+    shaped.activation = activationBlock(reason, { paidUrl, priceUsdc: "0.01" });
+    shaped.guard_reasons = [fundOnrampHint()];
+    return shaped;
+  };
+  try {
+    if (hasKey) {
+      const res = await payFetch(paidUrl);
+      if (res.ok || res.status === 200) {
+        const out = await res.json();
+        return shapeYieldEntryVerdict(out, { paid: true, isSample: false });
+      }
+      const reason = res.status === 402 ? "wallet not funded (paid /defi/yield-entry-verdict returned 402)" : `paid /defi/yield-entry-verdict returned HTTP ${res.status}`;
+      return await takePreview(reason);
+    }
+    return await takePreview("no PRIVATE_KEY configured \u2014 free preview returns a SAMPLE verdict (top-TVL pool); the per-pool verdict is paid ($0.01)");
+  } catch (err) {
+    const msg = `defi/yield-entry-verdict unavailable: ${err?.message || err}`;
+    return { error: msg, pool, verdict: null, risk_score: null, reasons: [], apy: null, is_sample: false, paid: false, summary: `ERROR: ${msg}` };
+  }
+}
+function buildSimulateUrl({ from, to, data, value, base = DATA_BASE } = {}) {
+  const f = String(from || "").trim();
+  const t = String(to || "").trim();
+  if (!ADDR_RE.test(f) || !ADDR_RE.test(t)) throw new Error("from and to are required 0x Base addresses");
+  const qs = new URLSearchParams({ from: f, to: t });
+  const d = data ? String(data).trim() : "";
+  if (d) qs.set("data", d);
+  const v = value !== void 0 && value !== null && String(value).trim() !== "" ? String(value).trim() : "";
+  if (v) qs.set("value", v);
+  return `${base}/chain/simulate?${qs.toString()}`;
+}
+function buildSimulatePreviewUrl({ base = DATA_BASE } = {}) {
+  return `${base}/chain/simulate/preview`;
+}
+function summarizeSimulation(out) {
+  if (!out || typeof out !== "object") return "no simulation";
+  if (out.will_revert == null) return out.note ? `simulation unavailable \u2014 ${out.note}` : "simulation unavailable";
+  const bits = [out.will_revert ? "WILL REVERT" : "will NOT revert"];
+  if (out.will_revert && out.revert_reason) bits.push(String(out.revert_reason));
+  if (out.gas_used != null) bits.push(`gas ${out.gas_used}`);
+  const moves = Array.isArray(out.asset_changes) ? out.asset_changes.length : 0;
+  if (moves) bits.push(`${moves} token move${moves === 1 ? "" : "s"}`);
+  if (out.is_sample) bits.push("(DEMO \u2014 pay for your tx)");
+  return bits.join(" \xB7 ");
+}
+function shapeSimulation(out, { paid, isSample }) {
+  const v = out && typeof out === "object" ? out : {};
+  const result = {
+    from: v.from,
+    to: v.to,
+    value: v.value,
+    will_revert: typeof v.will_revert === "boolean" ? v.will_revert : v.will_revert ?? null,
+    revert_reason: v.revert_reason ?? null,
+    gas_used: v.gas_used ?? null,
+    asset_changes: Array.isArray(v.asset_changes) ? v.asset_changes : [],
+    raw_status: v.raw_status ?? null,
+    is_sample: !!isSample,
+    paid
+  };
+  result.summary = summarizeSimulation(result);
+  return result;
+}
+async function runSimulate(payFetch, args = {}, { hasKey = true, previewFetch } = {}) {
+  const from = String(args.from || "").trim();
+  const to = String(args.to || "").trim();
+  if (!ADDR_RE.test(from) || !ADDR_RE.test(to)) {
+    const msg = "from and to are required 0x Base addresses \u2014 pass the prospective tx's sender and target.";
+    return { error: msg, from: args.from, to: args.to, will_revert: null, gas_used: null, asset_changes: [], is_sample: false, paid: false, summary: `ERROR: ${msg}` };
+  }
+  let paidUrl;
+  try {
+    paidUrl = buildSimulateUrl({ ...args, from, to });
+  } catch (err) {
+    const msg = `chain/simulate unavailable: ${err?.message || err}`;
+    return { error: msg, from, to, will_revert: null, gas_used: null, asset_changes: [], is_sample: false, paid: false, summary: `ERROR: ${msg}` };
+  }
+  const previewUrl = buildSimulatePreviewUrl(args);
+  const takePreview = async (reason) => {
+    const out = await plainGet(previewFetch, previewUrl);
+    const sample = out && out.preview || {};
+    const shaped = shapeSimulation(sample, { paid: false, isSample: true });
+    shaped.note = "Free preview is a benign demo dry-run (synthetic addresses) \u2014 not your tx. The dry-run of YOUR tx is the paid route ($0.005).";
+    shaped.activation = activationBlock(reason, { paidUrl, priceUsdc: "0.005" });
+    shaped.guard_reasons = [fundOnrampHint()];
+    return shaped;
+  };
+  try {
+    if (hasKey) {
+      const res = await payFetch(paidUrl);
+      if (res.ok || res.status === 200) {
+        const out = await res.json();
+        return shapeSimulation(out, { paid: true, isSample: false });
+      }
+      const reason = res.status === 402 ? "wallet not funded (paid /chain/simulate returned 402)" : `paid /chain/simulate returned HTTP ${res.status}`;
+      return await takePreview(reason);
+    }
+    return await takePreview("no PRIVATE_KEY configured \u2014 free preview returns a demo dry-run; YOUR tx dry-run is paid ($0.005)");
+  } catch (err) {
+    const msg = `chain/simulate unavailable: ${err?.message || err}`;
+    return { error: msg, from, to, will_revert: null, gas_used: null, asset_changes: [], is_sample: false, paid: false, summary: `ERROR: ${msg}` };
+  }
+}
 
 // src/tool.ts
 function envKey() {
@@ -681,6 +846,30 @@ function createCheckToken(opts = {}) {
     execute: async ({ token }) => runTokenReport(payFetch, { token, base }, { hasKey })
   });
 }
+function createYieldEntryVerdict(opts = {}) {
+  const { base, payFetch, hasKey } = resolve(opts);
+  return tool({
+    description: "Per-pool DeFi yield-entry go/no-go verdict via Grey Ridge /defi/yield-entry-verdict ($0.01 USDC/call, paid inline with x402 \u2014 no API key). Pass the DefiLlama pool id from defiYields/GET /defi/yields to get SUSTAINABLE/DECAYING/OUTLIER/AVOID + a 0-100 risk_score + field-cited reasons from the pool's APY trend (1d/7d/30d), stability forecast, impermanent loss, volatility, outlier flag and TVL. Call after defiYields finds a high-APY pool to decide whether to actually enter THAT pool before funding it.",
+    inputSchema: z.object({
+      pool: z.string().describe("DefiLlama poolId \u2014 the 'pool' field returned by defiYields / GET /defi/yields."),
+      token: z.string().optional().describe("Optional underlying token (0x, Base) \u2014 adds a honeypot-check pointer for the pool's asset.")
+    }),
+    execute: async ({ pool, token }) => runYieldEntryVerdict(payFetch, { pool, token, base }, { hasKey })
+  });
+}
+function createSimulateTx(opts = {}) {
+  const { base, payFetch, hasKey } = resolve(opts);
+  return tool({
+    description: "Prospective Base transaction dry-run via Grey Ridge /chain/simulate ($0.005 USDC/call, paid inline with x402 \u2014 no API key). Pass from, to and optional data (0x calldata) + value (wei) to get will_revert + revert_reason + gas_used + token asset_changes via eth_simulateV1 BEFORE the agent spends gas sending it. Tenderly/Alchemy-class output, keyless and Base-native. Call before any swap/approve/transfer, or alongside checkToken, to avoid a reverting or malicious tx.",
+    inputSchema: z.object({
+      from: z.string().describe("Sender 0x Base address (40 hex chars) \u2014 the wallet that would send the tx."),
+      to: z.string().describe("Target contract or address (0x, Base) the tx calls."),
+      data: z.string().optional().describe("Optional 0x-prefixed calldata (omit for a plain native transfer)."),
+      value: z.string().optional().describe("Optional wei to send, as a decimal or 0x-hex string (omit or '0' for none).")
+    }),
+    execute: async ({ from, to, data, value }) => runSimulate(payFetch, { from, to, data, value, base }, { hasKey })
+  });
+}
 var defiYields = createDefiYields({ privateKey: envKey(), base: envBase() });
 var cryptoPrices = createCryptoPrices({ privateKey: envKey(), base: envBase() });
 var baseBalance = createBaseBalance({ privateKey: envKey(), base: envBase() });
@@ -690,6 +879,8 @@ var baseTokenBalance = createBaseTokenBalance({ privateKey: envKey(), base: envB
 var cryptoFunding = createCryptoFunding({ privateKey: envKey(), base: envBase() });
 var marketBrief = createMarketBrief({ privateKey: envKey(), base: envBase() });
 var checkToken = createCheckToken({ privateKey: envKey(), base: envBase() });
+var yieldEntryVerdict = createYieldEntryVerdict({ privateKey: envKey(), base: envBase() });
+var simulateTx = createSimulateTx({ privateKey: envKey(), base: envBase() });
 var defiDataTools = {
   defiYields,
   cryptoPrices,
@@ -699,7 +890,9 @@ var defiDataTools = {
   baseTokenBalance,
   cryptoFunding,
   marketBrief,
-  checkToken
+  checkToken,
+  yieldEntryVerdict,
+  simulateTx
 };
 export {
   BASE_USDC,
@@ -719,10 +912,14 @@ export {
   buildMarketBriefUrl,
   buildPricesPreviewUrl,
   buildPricesUrl,
+  buildSimulatePreviewUrl,
+  buildSimulateUrl,
   buildTokenBalancePreviewUrl,
   buildTokenBalanceUrl,
   buildTokenReportPreviewUrl,
   buildTokenReportUrl,
+  buildYieldEntryVerdictPreviewUrl,
+  buildYieldEntryVerdictUrl,
   buildYieldsPreviewUrl,
   buildYieldsUrl,
   checkToken,
@@ -735,6 +932,8 @@ export {
   createCryptoPrices,
   createDefiYields,
   createMarketBrief,
+  createSimulateTx,
+  createYieldEntryVerdict,
   cryptoFunding,
   cryptoPrices,
   defiDataTools as default,
@@ -752,17 +951,23 @@ export {
   runGasPrice,
   runMarketBrief,
   runPrices,
+  runSimulate,
   runTokenBalance,
   runTokenReport,
+  runYieldEntryVerdict,
   runYields,
+  simulateTx,
   summarizeBalance,
   summarizeBlockNumber,
   summarizeFunding,
   summarizeGasPrice,
   summarizeMarketBrief,
   summarizePrices,
+  summarizeSimulation,
   summarizeTokenBalance,
   summarizeTokenReport,
-  summarizeYields
+  summarizeYieldEntryVerdict,
+  summarizeYields,
+  yieldEntryVerdict
 };
 //# sourceMappingURL=index.js.map

@@ -324,6 +324,90 @@ declare function buildTokenReportPreviewUrl(args?: TokenReportArgs): string;
 declare function summarizeTokenReport(out: Record<string, unknown>): string;
 declare function runTokenReport(payFetch: PayFetch$1, args?: TokenReportArgs, opts?: RunOpts): Promise<TokenReportResult>;
 
+// --- Per-pool yield-entry verdict ($0.01) — the go/no-go on the /defi/yields lane ---
+
+interface YieldEntryVerdictArgs {
+  pool: string;
+  token?: string;
+  base?: string;
+}
+
+interface VerdictReason {
+  code?: string;
+  detail?: string;
+  field?: string;
+}
+
+interface YieldEntryVerdictResult {
+  pool?: string;
+  project?: string;
+  chain?: string;
+  symbol?: string;
+  verdict: "SUSTAINABLE" | "DECAYING" | "OUTLIER" | "AVOID" | null | string;
+  risk_score: number | null;
+  reasons: Array<VerdictReason | string>;
+  apy: number | null;
+  apyPct7D?: number | null;
+  apyPct30D?: number | null;
+  predicted?: { class?: string; probability?: number } | null;
+  tvlUsd?: number | null;
+  token_safety_hint?: { token: string; note: string; resource: string };
+  is_sample: boolean;
+  paid: boolean;
+  summary: string;
+  note?: string;
+  activation?: Activation;
+  guard_reasons?: string[];
+  error?: string;
+}
+
+declare function buildYieldEntryVerdictUrl(args?: YieldEntryVerdictArgs): string;
+declare function buildYieldEntryVerdictPreviewUrl(args?: { base?: string }): string;
+declare function summarizeYieldEntryVerdict(out: Record<string, unknown>): string;
+declare function runYieldEntryVerdict(payFetch: PayFetch$1, args?: YieldEntryVerdictArgs, opts?: RunOpts): Promise<YieldEntryVerdictResult>;
+
+// --- Prospective-tx dry-run ($0.005) — will this Base tx revert? ---
+
+interface SimulateArgs {
+  from: string;
+  to: string;
+  data?: string;
+  value?: string | number;
+  base?: string;
+}
+
+interface AssetChange {
+  token?: string;
+  symbol?: string;
+  from?: string;
+  to?: string;
+  value?: string;
+  [k: string]: unknown;
+}
+
+interface SimulationResult {
+  from?: string;
+  to?: string;
+  value?: string;
+  will_revert: boolean | null;
+  revert_reason: string | null;
+  gas_used: number | string | null;
+  asset_changes: AssetChange[];
+  raw_status: string | null;
+  is_sample: boolean;
+  paid: boolean;
+  summary: string;
+  note?: string;
+  activation?: Activation;
+  guard_reasons?: string[];
+  error?: string;
+}
+
+declare function buildSimulateUrl(args?: SimulateArgs): string;
+declare function buildSimulatePreviewUrl(args?: { base?: string }): string;
+declare function summarizeSimulation(out: Record<string, unknown>): string;
+declare function runSimulate(payFetch: PayFetch$1, args?: SimulateArgs, opts?: RunOpts): Promise<SimulationResult>;
+
 type PayFetch = (url: string) => Promise<Response>;
 
 interface DataToolOptions {
@@ -441,6 +525,37 @@ declare function createMarketBrief(opts?: DataToolOptions): ai.Tool<{}, MarketBr
 declare function createCheckToken(opts?: DataToolOptions): ai.Tool<{
     token?: string | undefined;
 }, TokenReportResult>;
+/**
+ * Vercel AI SDK tool: per-pool DeFi yield-entry go/no-go verdict via Grey Ridge
+ * `/defi/yield-entry-verdict` ($0.01 USDC/call, paid inline with x402 — no API
+ * key). After `defiYields` finds a high-APY pool, pass that pool's DefiLlama
+ * `pool` id to get SUSTAINABLE | DECAYING | OUTLIER | AVOID + a 0-100 risk_score
+ * + field-cited reasons (APY 1d/7d/30d trend, DefiLlama stability forecast, IL,
+ * volatility, outlier flag, TVL). The free preview returns a SAMPLE verdict (the
+ * current top-TVL pool), so a keyless install sees the shape but the verdict for
+ * the caller's own pool is the paid route (degrades OPEN with is_sample:true —
+ * never a fabricated verdict). Call before funding a yield position.
+ */
+declare function createYieldEntryVerdict(opts?: DataToolOptions): ai.Tool<{
+    pool: string;
+    token?: string | undefined;
+}, YieldEntryVerdictResult>;
+/**
+ * Vercel AI SDK tool: prospective-transaction dry-run via Grey Ridge
+ * `/chain/simulate` ($0.005 USDC/call, paid inline with x402 — no API key).
+ * Answers "will THIS Base tx revert, how much gas, what tokens move" BEFORE the
+ * agent spends gas sending it, via eth_simulateV1: pass from/to and optional
+ * calldata/value. The pre-trade check for any swap/approve/transfer and the
+ * companion to checkToken. The free preview is a benign demo dry-run, so a
+ * keyless install sees the output shape; the dry-run of the caller's own tx is
+ * the paid route (degrades OPEN with is_sample:true — never a fabricated result).
+ */
+declare function createSimulateTx(opts?: DataToolOptions): ai.Tool<{
+    from: string;
+    to: string;
+    data?: string | undefined;
+    value?: string | undefined;
+}, SimulationResult>;
 /** Zero-config tool instances: read `PRIVATE_KEY` (agent wallet) + optional `X402_DATA_BASE_URL` from env. */
 declare const defiYields: ai.Tool<{
     limit?: number;
@@ -468,7 +583,17 @@ declare const marketBrief: ai.Tool<{}, MarketBriefResult>;
 declare const checkToken: ai.Tool<{
     token?: string | undefined;
 }, TokenReportResult>;
-/** All nine data tools as a ready-to-spread toolset: `tools: { ...defiDataTools }`. */
+declare const yieldEntryVerdict: ai.Tool<{
+    pool: string;
+    token?: string | undefined;
+}, YieldEntryVerdictResult>;
+declare const simulateTx: ai.Tool<{
+    from: string;
+    to: string;
+    data?: string | undefined;
+    value?: string | undefined;
+}, SimulationResult>;
+/** All eleven data tools as a ready-to-spread toolset: `tools: { ...defiDataTools }`. */
 declare const defiDataTools: {
     defiYields: ai.Tool<{
         limit?: number;
@@ -496,6 +621,16 @@ declare const defiDataTools: {
     checkToken: ai.Tool<{
         token?: string | undefined;
     }, TokenReportResult>;
+    yieldEntryVerdict: ai.Tool<{
+        pool: string;
+        token?: string | undefined;
+    }, YieldEntryVerdictResult>;
+    simulateTx: ai.Tool<{
+        from: string;
+        to: string;
+        data?: string | undefined;
+        value?: string | undefined;
+    }, SimulationResult>;
 };
 
-export { type Activation, BASE_USDC, type BalanceArgs, type BalanceResponse, type BalanceResult, type BlockNumberResponse, type BlockNumberResult, type BriefArgs, DATA_BASE, DEMO_TOKEN, type DataToolOptions, type FundingArgs, type FundingResult, type FundingRow, type GasPriceResponse, type GasPriceResult, type MarketBriefResponse, type MarketBriefResult, type PricesArgs, type PricesResult, type ReadArgs, type TokenBalanceArgs, type TokenBalanceResponse, type TokenBalanceResult, type TokenPrice, type TokenReportArgs, type TokenReportResult, type YieldArgs, type YieldPool, type YieldsResult, baseBalance, baseBlockNumber, baseGasPrice, baseTokenBalance, buildBalanceUrl, buildBlockNumberPreviewUrl, buildBlockNumberUrl, buildFundingPreviewUrl, buildFundingUrl, buildGasPricePreviewUrl, buildGasPriceUrl, buildMarketBriefUrl, buildPricesPreviewUrl, buildPricesUrl, buildTokenBalancePreviewUrl, buildTokenBalanceUrl, buildTokenReportPreviewUrl, buildTokenReportUrl, buildYieldsPreviewUrl, buildYieldsUrl, checkToken, createBaseBalance, createBaseBlockNumber, createBaseGasPrice, createBaseTokenBalance, createCheckToken, createCryptoFunding, createCryptoPrices, createDefiYields, createMarketBrief, cryptoFunding, cryptoPrices, defiDataTools as default, defiDataTools, defiYields, fetchFundingOrPreview, fetchPricesOrPreview, fetchYieldsOrPreview, fundOnrampHint, marketBrief, normalizeCoins, runBalance, runBlockNumber, runFunding, runGasPrice, runMarketBrief, runPrices, runTokenBalance, runTokenReport, runYields, summarizeBalance, summarizeBlockNumber, summarizeFunding, summarizeGasPrice, summarizeMarketBrief, summarizePrices, summarizeTokenBalance, summarizeTokenReport, summarizeYields };
+export { type Activation, type AssetChange, BASE_USDC, type BalanceArgs, type BalanceResponse, type BalanceResult, type BlockNumberResponse, type BlockNumberResult, type BriefArgs, DATA_BASE, DEMO_TOKEN, type DataToolOptions, type FundingArgs, type FundingResult, type FundingRow, type GasPriceResponse, type GasPriceResult, type MarketBriefResponse, type MarketBriefResult, type PricesArgs, type PricesResult, type ReadArgs, type SimulateArgs, type SimulationResult, type TokenBalanceArgs, type TokenBalanceResponse, type TokenBalanceResult, type TokenPrice, type TokenReportArgs, type TokenReportResult, type VerdictReason, type YieldArgs, type YieldEntryVerdictArgs, type YieldEntryVerdictResult, type YieldPool, type YieldsResult, baseBalance, baseBlockNumber, baseGasPrice, baseTokenBalance, buildBalanceUrl, buildBlockNumberPreviewUrl, buildBlockNumberUrl, buildFundingPreviewUrl, buildFundingUrl, buildGasPricePreviewUrl, buildGasPriceUrl, buildMarketBriefUrl, buildPricesPreviewUrl, buildPricesUrl, buildSimulatePreviewUrl, buildSimulateUrl, buildTokenBalancePreviewUrl, buildTokenBalanceUrl, buildTokenReportPreviewUrl, buildTokenReportUrl, buildYieldEntryVerdictPreviewUrl, buildYieldEntryVerdictUrl, buildYieldsPreviewUrl, buildYieldsUrl, checkToken, createBaseBalance, createBaseBlockNumber, createBaseGasPrice, createBaseTokenBalance, createCheckToken, createCryptoFunding, createCryptoPrices, createDefiYields, createMarketBrief, createSimulateTx, createYieldEntryVerdict, cryptoFunding, cryptoPrices, defiDataTools as default, defiDataTools, defiYields, fetchFundingOrPreview, fetchPricesOrPreview, fetchYieldsOrPreview, fundOnrampHint, marketBrief, normalizeCoins, runBalance, runBlockNumber, runFunding, runGasPrice, runMarketBrief, runPrices, runSimulate, runTokenBalance, runTokenReport, runYieldEntryVerdict, runYields, simulateTx, summarizeBalance, summarizeBlockNumber, summarizeFunding, summarizeGasPrice, summarizeMarketBrief, summarizePrices, summarizeSimulation, summarizeTokenBalance, summarizeTokenReport, summarizeYieldEntryVerdict, summarizeYields, yieldEntryVerdict };
