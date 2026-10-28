@@ -215,6 +215,130 @@ async function runBalance(payFetch, args = {}, { hasKey = true } = {}) {
     return { error: msg, address: args.address, paid: false, summary: `ERROR: ${msg}` };
   }
 }
+var BASE_USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
+function buildGasPriceUrl({ base = DATA_BASE } = {}) {
+  return `${base}/chain/gas-price`;
+}
+function buildGasPricePreviewUrl({ base = DATA_BASE } = {}) {
+  return `${base}/chain/gas-price/preview`;
+}
+function buildBlockNumberUrl({ base = DATA_BASE } = {}) {
+  return `${base}/chain/block-number`;
+}
+function buildBlockNumberPreviewUrl({ base = DATA_BASE } = {}) {
+  return `${base}/chain/block-number/preview`;
+}
+function buildTokenBalanceUrl({ address, token = BASE_USDC, base = DATA_BASE } = {}) {
+  if (!ADDR_RE.test(String(address || ""))) throw new Error(`invalid Base address: ${address}`);
+  if (!ADDR_RE.test(String(token || ""))) throw new Error(`invalid Base token address: ${token}`);
+  const qs = new URLSearchParams({ address, token });
+  return `${base}/chain/token-balance?${qs.toString()}`;
+}
+function buildTokenBalancePreviewUrl({ address, token = BASE_USDC, base = DATA_BASE } = {}) {
+  if (!ADDR_RE.test(String(address || ""))) throw new Error(`invalid Base address: ${address}`);
+  if (!ADDR_RE.test(String(token || ""))) throw new Error(`invalid Base token address: ${token}`);
+  const qs = new URLSearchParams({ address, token });
+  return `${base}/chain/token-balance/preview?${qs.toString()}`;
+}
+function gwei(n) {
+  if (typeof n !== "number" || !Number.isFinite(n)) return null;
+  return `${n < 1e-3 && n > 0 ? n.toExponential(2) : n.toFixed(n < 1 ? 4 : 2)} gwei`;
+}
+function summarizeGasPrice(out) {
+  if (!out || typeof out !== "object" || out.gas_price_gwei == null) return "no gas price";
+  const bits = [];
+  const g = gwei(Number(out.gas_price_gwei));
+  if (g) bits.push(`gas ${g}`);
+  const bf = gwei(typeof out.base_fee_gwei === "number" ? out.base_fee_gwei : NaN);
+  if (bf) bits.push(`base ${bf}`);
+  const pf = gwei(typeof out.priority_fee_gwei === "number" ? out.priority_fee_gwei : NaN);
+  if (pf) bits.push(`priority ${pf}`);
+  return `Base ${bits.join(" \xB7 ") || "gas price"}`;
+}
+function summarizeBlockNumber(out) {
+  if (!out || typeof out !== "object" || out.block_number == null) return "no block number";
+  return `Base mainnet block #${Number(out.block_number).toLocaleString("en-US")}`;
+}
+function summarizeTokenBalance(out) {
+  if (!out || typeof out !== "object" || out.balance == null) return "no token balance";
+  const sym = out.symbol || "token";
+  const addr = out.address ? `${String(out.address).slice(0, 10)}\u2026` : "address";
+  const bal = Number(out.balance);
+  const amt = Number.isFinite(bal) ? bal.toLocaleString("en-US", { maximumFractionDigits: 6 }) : out.balance_formatted;
+  return `${addr} holds ${amt} ${sym} on Base`;
+}
+async function runFullPreviewRead(payFetch, { paidUrl, previewUrl, summarize, priceUsdc, label }, { hasKey, previewFetch }) {
+  try {
+    if (hasKey) {
+      const res = await payFetch(paidUrl);
+      if (res.ok || res.status === 200) {
+        const out3 = await res.json();
+        return { ...out3, paid: true, summary: summarize(out3) };
+      }
+      const reason = res.status === 402 ? `wallet not funded (paid ${label} returned 402)` : `paid ${label} returned HTTP ${res.status}`;
+      const out2 = await plainGet(previewFetch, previewUrl);
+      return { ...out2, paid: false, summary: summarize(out2), activation: activationBlock(reason, { paidUrl, priceUsdc }) };
+    }
+    const out = await plainGet(previewFetch, previewUrl);
+    return {
+      ...out,
+      paid: false,
+      summary: summarize(out),
+      activation: activationBlock("no PRIVATE_KEY configured \u2014 free preview returns identical full data", { paidUrl, priceUsdc })
+    };
+  } catch (err) {
+    const msg = `${label} unavailable: ${err?.message || err}`;
+    return { error: msg, paid: false, summary: `ERROR: ${msg}` };
+  }
+}
+async function runGasPrice(payFetch, args = {}, { hasKey = true, previewFetch } = {}) {
+  return runFullPreviewRead(
+    payFetch,
+    { paidUrl: buildGasPriceUrl(args), previewUrl: buildGasPricePreviewUrl(args), summarize: summarizeGasPrice, priceUsdc: "0.002", label: "/chain/gas-price" },
+    { hasKey, previewFetch }
+  );
+}
+async function runBlockNumber(payFetch, args = {}, { hasKey = true, previewFetch } = {}) {
+  return runFullPreviewRead(
+    payFetch,
+    { paidUrl: buildBlockNumberUrl(args), previewUrl: buildBlockNumberPreviewUrl(args), summarize: summarizeBlockNumber, priceUsdc: "0.002", label: "/chain/block-number" },
+    { hasKey, previewFetch }
+  );
+}
+async function runTokenBalance(payFetch, args = {}, { hasKey = true, previewFetch } = {}) {
+  const resolved = { ...args, token: args.token || BASE_USDC };
+  let paidUrl;
+  let previewUrl;
+  try {
+    paidUrl = buildTokenBalanceUrl(resolved);
+    previewUrl = buildTokenBalancePreviewUrl(resolved);
+  } catch (err) {
+    const msg = `chain/token-balance unavailable: ${err?.message || err}`;
+    return { error: msg, address: args.address, token: resolved.token, paid: false, summary: `ERROR: ${msg}` };
+  }
+  try {
+    if (hasKey) {
+      const res = await payFetch(paidUrl);
+      if (res.ok || res.status === 200) {
+        const out3 = await res.json();
+        return { ...out3, paid: true, summary: summarizeTokenBalance(out3) };
+      }
+      const reason = res.status === 402 ? "wallet not funded (paid /chain/token-balance returned 402)" : `paid /chain/token-balance returned HTTP ${res.status}`;
+      const out2 = await plainGet(previewFetch, previewUrl);
+      return { ...out2, paid: false, summary: summarizeTokenBalance(out2), activation: activationBlock(reason, { paidUrl, priceUsdc: "0.002" }) };
+    }
+    const out = await plainGet(previewFetch, previewUrl);
+    return {
+      ...out,
+      paid: false,
+      summary: summarizeTokenBalance(out),
+      activation: activationBlock("no PRIVATE_KEY configured \u2014 free preview returns the real balance", { paidUrl, priceUsdc: "0.002" })
+    };
+  } catch (err) {
+    const msg = `chain/token-balance unavailable: ${err?.message || err}`;
+    return { error: msg, address: args.address, token: resolved.token, paid: false, summary: `ERROR: ${msg}` };
+  }
+}
 
 // src/tool.ts
 function envKey() {
@@ -269,19 +393,69 @@ function createBaseBalance(opts = {}) {
     execute: async ({ address }) => runBalance(payFetch, { address, base }, { hasKey })
   });
 }
+function createBaseGasPrice(opts = {}) {
+  const { base, payFetch, hasKey } = resolve(opts);
+  return tool({
+    description: "Current Base mainnet gas price via Grey Ridge /chain/gas-price ($0.002 USDC/call, paid inline with x402 \u2014 no API key). Returns EIP-1559 base_fee_gwei, priority_fee_gwei, gas_price_gwei/_wei and gas_price_usd. Use to time a Base transaction around cheap gas.",
+    inputSchema: z.object({}),
+    execute: async () => runGasPrice(payFetch, { base }, { hasKey })
+  });
+}
+function createBaseBlockNumber(opts = {}) {
+  const { base, payFetch, hasKey } = resolve(opts);
+  return tool({
+    description: "Current Base mainnet block number via Grey Ridge /chain/block-number ($0.002 USDC/call, paid inline with x402 \u2014 no API key). Use for chain height or confirmation math.",
+    inputSchema: z.object({}),
+    execute: async () => runBlockNumber(payFetch, { base }, { hasKey })
+  });
+}
+function createBaseTokenBalance(opts = {}) {
+  const { base, payFetch, hasKey } = resolve(opts);
+  return tool({
+    description: "ERC-20 token balance of a Base mainnet address via Grey Ridge /chain/token-balance ($0.002 USDC/call, paid inline with x402 \u2014 no API key). Returns symbol, decimals, balance and balance_formatted. token defaults to USDC on Base.",
+    inputSchema: z.object({
+      address: z.string().describe("0x-prefixed Base mainnet address to read the balance of (40 hex chars)."),
+      token: z.string().optional().describe(`0x-prefixed ERC-20 contract on Base. Defaults to USDC (${BASE_USDC}).`)
+    }),
+    execute: async ({ address, token }) => runTokenBalance(payFetch, { address, token, base }, { hasKey })
+  });
+}
 var defiYields = createDefiYields({ privateKey: envKey(), base: envBase() });
 var cryptoPrices = createCryptoPrices({ privateKey: envKey(), base: envBase() });
 var baseBalance = createBaseBalance({ privateKey: envKey(), base: envBase() });
-var defiDataTools = { defiYields, cryptoPrices, baseBalance };
+var baseGasPrice = createBaseGasPrice({ privateKey: envKey(), base: envBase() });
+var baseBlockNumber = createBaseBlockNumber({ privateKey: envKey(), base: envBase() });
+var baseTokenBalance = createBaseTokenBalance({ privateKey: envKey(), base: envBase() });
+var defiDataTools = {
+  defiYields,
+  cryptoPrices,
+  baseBalance,
+  baseGasPrice,
+  baseBlockNumber,
+  baseTokenBalance
+};
 export {
+  BASE_USDC,
   DATA_BASE,
   baseBalance,
+  baseBlockNumber,
+  baseGasPrice,
+  baseTokenBalance,
   buildBalanceUrl,
+  buildBlockNumberPreviewUrl,
+  buildBlockNumberUrl,
+  buildGasPricePreviewUrl,
+  buildGasPriceUrl,
   buildPricesPreviewUrl,
   buildPricesUrl,
+  buildTokenBalancePreviewUrl,
+  buildTokenBalanceUrl,
   buildYieldsPreviewUrl,
   buildYieldsUrl,
   createBaseBalance,
+  createBaseBlockNumber,
+  createBaseGasPrice,
+  createBaseTokenBalance,
   createCryptoPrices,
   createDefiYields,
   cryptoPrices,
@@ -293,10 +467,16 @@ export {
   fundOnrampHint,
   normalizeCoins,
   runBalance,
+  runBlockNumber,
+  runGasPrice,
   runPrices,
+  runTokenBalance,
   runYields,
   summarizeBalance,
+  summarizeBlockNumber,
+  summarizeGasPrice,
   summarizePrices,
+  summarizeTokenBalance,
   summarizeYields
 };
 //# sourceMappingURL=index.js.map
