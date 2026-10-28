@@ -23,10 +23,56 @@ function makePayFetch(privateKey) {
 var DATA_BASE = "https://x402-data-api.sigrunner.workers.dev";
 var ADDR_RE = /0x[a-fA-F0-9]{40}/;
 var COINGECKO_ID_RE = /^[a-z0-9-]{1,40}$/;
+var COIN_ALIASES = {
+  btc: "bitcoin",
+  eth: "ethereum",
+  weth: "weth",
+  sol: "solana",
+  bnb: "binancecoin",
+  xrp: "ripple",
+  ada: "cardano",
+  doge: "dogecoin",
+  avax: "avalanche-2",
+  dot: "polkadot",
+  matic: "matic-network",
+  pol: "matic-network",
+  link: "chainlink",
+  uni: "uniswap",
+  ltc: "litecoin",
+  trx: "tron",
+  atom: "cosmos",
+  near: "near",
+  apt: "aptos",
+  arb: "arbitrum",
+  op: "optimism",
+  usdc: "usd-coin",
+  usdt: "tether",
+  dai: "dai",
+  wbtc: "wrapped-bitcoin",
+  cbbtc: "coinbase-wrapped-btc",
+  steth: "staked-ether",
+  aave: "aave",
+  mkr: "maker",
+  ldo: "lido-dao",
+  crv: "curve-dao-token",
+  snx: "havven",
+  comp: "compound-governance-token",
+  aero: "aerodrome-finance",
+  degen: "degen-base",
+  pepe: "pepe",
+  shib: "shiba-inu",
+  ena: "ethena",
+  sui: "sui",
+  ton: "the-open-network",
+  hype: "hyperliquid"
+};
 function normalizeCoins(coins) {
   const raw = Array.isArray(coins) ? coins : String(coins || "").split(",").map((s) => s.trim());
-  const ids = raw.filter(Boolean);
-  if (ids.length === 0) throw new Error("coins must contain at least one CoinGecko id");
+  const ids = raw.filter(Boolean).map((s) => {
+    const k = s.toLowerCase();
+    return COIN_ALIASES[k] ?? k;
+  });
+  if (ids.length === 0) throw new Error("coins must contain at least one CoinGecko id or ticker symbol");
   if (ids.length > 25) throw new Error("coins accepts at most 25 ids");
   const bad = ids.filter((id) => !COINGECKO_ID_RE.test(id));
   if (bad.length) throw new Error(`invalid coingecko id(s): ${bad.join(", ")}`);
@@ -563,9 +609,9 @@ function createDefiYields(opts = {}) {
 function createCryptoPrices(opts = {}) {
   const { base, payFetch, hasKey } = resolve(opts);
   return tool({
-    description: "Spot token prices (DefiLlama) via Grey Ridge /crypto/prices ($0.001 USDC/call, paid inline with x402 \u2014 no API key). Pass comma-separated CoinGecko ids (up to 25); returns price, change_24h, symbol, confidence and timestamp per token.",
+    description: "Spot token prices (DefiLlama) via Grey Ridge /crypto/prices ($0.001 USDC/call, paid inline with x402 \u2014 no API key). Pass comma-separated ticker symbols or CoinGecko ids (up to 25); returns price, change_24h, symbol, confidence and timestamp per token.",
     inputSchema: z.object({
-      coins: z.string().describe("Comma-separated CoinGecko ids (max 25), e.g. 'bitcoin,ethereum,solana'.")
+      coins: z.string().describe("Comma-separated ticker symbols or CoinGecko ids (max 25), e.g. 'ETH,BTC' or 'bitcoin,ethereum,solana'.")
     }),
     execute: async ({ coins }) => runPrices(payFetch, { coins, base }, { hasKey })
   });
