@@ -66,6 +66,7 @@ function buildBalanceUrl({ address, base = DATA_BASE } = {}) {
 function usd(n) {
   if (typeof n !== "number" || !Number.isFinite(n)) return null;
   const abs = Math.abs(n);
+  if (abs >= 1e12) return `$${(n / 1e12).toFixed(2)}T`;
   if (abs >= 1e9) return `$${(n / 1e9).toFixed(2)}B`;
   if (abs >= 1e6) return `$${(n / 1e6).toFixed(2)}M`;
   if (abs >= 1e3) return `$${Math.round(n).toLocaleString("en-US")}`;
@@ -339,6 +340,102 @@ async function runTokenBalance(payFetch, args = {}, { hasKey = true, previewFetc
     return { error: msg, address: args.address, token: resolved.token, paid: false, summary: `ERROR: ${msg}` };
   }
 }
+function buildFundingUrl({ limit = 20, base = DATA_BASE } = {}) {
+  const qs = new URLSearchParams({ limit: String(clampLimit(limit)) });
+  return `${base}/crypto/funding?${qs.toString()}`;
+}
+function buildFundingPreviewUrl({ base = DATA_BASE } = {}) {
+  return `${base}/crypto/funding/preview`;
+}
+function buildMarketBriefUrl({ base = DATA_BASE } = {}) {
+  return `${base}/brief/market`;
+}
+function summarizeFunding(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) return "no funding data";
+  const t = rows[0];
+  const bits = [t.coin || "coin"];
+  if (typeof t.funding_spread_bps === "number") bits.push(`arb spread ${t.funding_spread_bps.toFixed(2)}bps`);
+  if (t.signal) bits.push(String(t.signal));
+  if (t.best_long_venue && t.best_short_venue) bits.push(`long@${t.best_long_venue}/short@${t.best_short_venue}`);
+  return `Top of ${rows.length}: ${bits.join(" \xB7 ")}`;
+}
+function summarizeMarketBrief(out) {
+  if (!out || typeof out !== "object" || out.fear_greed == null) return "no market brief";
+  const bits = [];
+  if (out.fear_greed && out.fear_greed.value != null) {
+    bits.push(`F&G ${out.fear_greed.value}${out.fear_greed.classification ? ` (${out.fear_greed.classification})` : ""}`);
+  }
+  const cap = out.global && usd(out.global.total_market_cap_usd);
+  if (cap) bits.push(`mcap ${cap}`);
+  if (out.global && typeof out.global.btc_dominance_pct === "number") bits.push(`BTC dom ${out.global.btc_dominance_pct.toFixed(1)}%`);
+  const trend = Array.isArray(out.trending) && out.trending[0] ? out.trending[0].symbol || out.trending[0].name : null;
+  if (trend) bits.push(`trending ${trend}`);
+  return bits.join(" \xB7 ") || "market brief";
+}
+async function fetchFundingOrPreview(payFetch, args = {}, { hasKey = true, previewFetch } = {}) {
+  const paidUrl = buildFundingUrl(args);
+  const takePreview = async (reason2) => {
+    const out = await plainGet(previewFetch, buildFundingPreviewUrl(args));
+    const funding = Array.isArray(out?.preview) ? out.preview : [];
+    return { funding, paid: false, total_available: out?.total_available, activation: activationBlock(reason2, { paidUrl, priceUsdc: "0.004" }) };
+  };
+  if (!hasKey) return takePreview("no PRIVATE_KEY configured");
+  const res = await payFetch(paidUrl);
+  if (res.ok || res.status === 200) {
+    const out = await res.json();
+    return { funding: Array.isArray(out) ? out : [], paid: true };
+  }
+  const reason = res.status === 402 ? "wallet not funded (paid /crypto/funding returned 402)" : `paid /crypto/funding returned HTTP ${res.status}`;
+  return takePreview(reason);
+}
+async function runFunding(payFetch, args = {}, { hasKey = true, previewFetch } = {}) {
+  try {
+    const out = await fetchFundingOrPreview(payFetch, args, { hasKey, previewFetch });
+    const result = {
+      funding: out.funding,
+      count: out.funding.length,
+      summary: summarizeFunding(out.funding),
+      paid: out.paid
+    };
+    if (out.total_available != null) result.total_available = out.total_available;
+    if (out.activation) {
+      result.activation = out.activation;
+      result.guard_reasons = [out.activation.hint];
+    }
+    return result;
+  } catch (err) {
+    const msg = `crypto/funding unavailable: ${err?.message || err}`;
+    return { error: msg, funding: [], count: 0, summary: `ERROR: ${msg}`, paid: false };
+  }
+}
+async function runMarketBrief(payFetch, args = {}, { hasKey = true } = {}) {
+  const paidUrl = buildMarketBriefUrl(args);
+  try {
+    if (!hasKey) {
+      return {
+        paid: false,
+        summary: "market brief requires a funded wallet \u2014 running keyless",
+        activation: activationBlock("no PRIVATE_KEY configured", { paidUrl, priceUsdc: "0.01" }),
+        guard_reasons: [fundOnrampHint()]
+      };
+    }
+    const res = await payFetch(paidUrl);
+    if (res.ok || res.status === 200) {
+      const out = await res.json();
+      return { ...out, paid: true, summary: summarizeMarketBrief(out) };
+    }
+    const reason = res.status === 402 ? "wallet not funded (paid /brief/market returned 402)" : `paid /brief/market returned HTTP ${res.status}`;
+    return {
+      paid: false,
+      summary: `market brief unavailable \u2014 ${reason}`,
+      activation: activationBlock(reason, { paidUrl, priceUsdc: "0.01" }),
+      guard_reasons: [fundOnrampHint()]
+    };
+  } catch (err) {
+    const msg = `brief/market unavailable: ${err?.message || err}`;
+    return { error: msg, paid: false, summary: `ERROR: ${msg}` };
+  }
+}
 
 // src/tool.ts
 function envKey() {
@@ -420,19 +517,41 @@ function createBaseTokenBalance(opts = {}) {
     execute: async ({ address, token }) => runTokenBalance(payFetch, { address, token, base }, { hasKey })
   });
 }
+function createCryptoFunding(opts = {}) {
+  const { base, payFetch, hasKey } = resolve(opts);
+  return tool({
+    description: "Cross-venue perp funding rates (Hyperliquid + OKX + dYdX) via Grey Ridge /crypto/funding ($0.004 USDC/call, paid inline with x402 \u2014 no API key). Top coins by 24h volume with per-venue funding, arb spread (bps), cheapest-long/richest-short venue, premium, annualized rates, LONGS_PAY/SHORTS_PAY/NEUTRAL signal, next_funding_ts, mark/oracle prices and open interest. Use for funding-rate arbitrage or perp positioning.",
+    inputSchema: z.object({
+      limit: z.number().positive().default(20).describe("Max coins to return (1-100), ranked by 24h notional volume.")
+    }),
+    execute: async ({ limit }) => runFunding(payFetch, { limit, base }, { hasKey })
+  });
+}
+function createMarketBrief(opts = {}) {
+  const { base, payFetch, hasKey } = resolve(opts);
+  return tool({
+    description: "One-call crypto market brief via Grey Ridge /brief/market ($0.01 USDC/call, paid inline with x402 \u2014 no API key). Returns Fear & Greed, global market cap + 24h volume + BTC/ETH dominance, top 5 gainers/losers, trending coins and top DeFi fee earners \u2014 a full market snapshot in one payment. Use when an agent needs the whole market picture at once.",
+    inputSchema: z.object({}),
+    execute: async () => runMarketBrief(payFetch, { base }, { hasKey })
+  });
+}
 var defiYields = createDefiYields({ privateKey: envKey(), base: envBase() });
 var cryptoPrices = createCryptoPrices({ privateKey: envKey(), base: envBase() });
 var baseBalance = createBaseBalance({ privateKey: envKey(), base: envBase() });
 var baseGasPrice = createBaseGasPrice({ privateKey: envKey(), base: envBase() });
 var baseBlockNumber = createBaseBlockNumber({ privateKey: envKey(), base: envBase() });
 var baseTokenBalance = createBaseTokenBalance({ privateKey: envKey(), base: envBase() });
+var cryptoFunding = createCryptoFunding({ privateKey: envKey(), base: envBase() });
+var marketBrief = createMarketBrief({ privateKey: envKey(), base: envBase() });
 var defiDataTools = {
   defiYields,
   cryptoPrices,
   baseBalance,
   baseGasPrice,
   baseBlockNumber,
-  baseTokenBalance
+  baseTokenBalance,
+  cryptoFunding,
+  marketBrief
 };
 export {
   BASE_USDC,
@@ -444,8 +563,11 @@ export {
   buildBalanceUrl,
   buildBlockNumberPreviewUrl,
   buildBlockNumberUrl,
+  buildFundingPreviewUrl,
+  buildFundingUrl,
   buildGasPricePreviewUrl,
   buildGasPriceUrl,
+  buildMarketBriefUrl,
   buildPricesPreviewUrl,
   buildPricesUrl,
   buildTokenBalancePreviewUrl,
@@ -456,25 +578,34 @@ export {
   createBaseBlockNumber,
   createBaseGasPrice,
   createBaseTokenBalance,
+  createCryptoFunding,
   createCryptoPrices,
   createDefiYields,
+  createMarketBrief,
+  cryptoFunding,
   cryptoPrices,
   defiDataTools as default,
   defiDataTools,
   defiYields,
+  fetchFundingOrPreview,
   fetchPricesOrPreview,
   fetchYieldsOrPreview,
   fundOnrampHint,
+  marketBrief,
   normalizeCoins,
   runBalance,
   runBlockNumber,
+  runFunding,
   runGasPrice,
+  runMarketBrief,
   runPrices,
   runTokenBalance,
   runYields,
   summarizeBalance,
   summarizeBlockNumber,
+  summarizeFunding,
   summarizeGasPrice,
+  summarizeMarketBrief,
   summarizePrices,
   summarizeTokenBalance,
   summarizeYields

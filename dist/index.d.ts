@@ -209,6 +209,89 @@ declare function runGasPrice(payFetch: PayFetch$1, args?: ReadArgs, opts?: RunOp
 declare function runBlockNumber(payFetch: PayFetch$1, args?: ReadArgs, opts?: RunOpts): Promise<BlockNumberResult>;
 declare function runTokenBalance(payFetch: PayFetch$1, args?: TokenBalanceArgs, opts?: RunOpts): Promise<TokenBalanceResult>;
 
+// --- Market-intelligence routes: perp funding, market brief ---
+
+interface FundingArgs {
+  limit?: number;
+  base?: string;
+}
+interface BriefArgs {
+  base?: string;
+}
+
+interface FundingRow {
+  coin?: string;
+  funding?: Record<string, number>;
+  funding_spread_bps?: number;
+  best_long_venue?: string;
+  best_short_venue?: string;
+  premium?: number;
+  annualized_hl?: number;
+  annualized_okx?: number;
+  signal?: "LONGS_PAY" | "SHORTS_PAY" | "NEUTRAL" | string;
+  next_funding_ts?: number;
+  markPx?: number;
+  oraclePx?: number;
+  openInterest?: number;
+  dayNtlVlm?: number;
+  [k: string]: unknown;
+}
+
+interface MarketBriefResponse {
+  fear_greed?: { value: number; classification: string };
+  global?: {
+    total_market_cap_usd?: number;
+    total_volume_24h_usd?: number;
+    market_cap_change_24h_pct?: number;
+    btc_dominance_pct?: number;
+    eth_dominance_pct?: number;
+  };
+  movers?: { gainers: unknown[]; losers: unknown[] };
+  trending?: Array<{ name?: string; symbol?: string }>;
+  defi_fees_top?: { total24h_usd?: number; protocols?: Array<{ name: string; fees24h_usd: number }> };
+  source?: string;
+  ts?: string;
+  [k: string]: unknown;
+}
+
+interface FundingResult {
+  funding: FundingRow[];
+  count: number;
+  summary: string;
+  paid: boolean;
+  total_available?: number;
+  activation?: Activation;
+  guard_reasons?: string[];
+  error?: string;
+}
+interface MarketBriefResult extends MarketBriefResponse {
+  summary: string;
+  paid: boolean;
+  activation?: Activation;
+  guard_reasons?: string[];
+  error?: string;
+}
+
+declare function buildFundingUrl(args?: FundingArgs): string;
+declare function buildFundingPreviewUrl(args?: { base?: string }): string;
+declare function buildMarketBriefUrl(args?: BriefArgs): string;
+
+declare function summarizeFunding(rows: FundingRow[]): string;
+declare function summarizeMarketBrief(out: MarketBriefResponse): string;
+
+declare function fetchFundingOrPreview(
+  payFetch: PayFetch$1,
+  args?: FundingArgs,
+  opts?: RunOpts
+): Promise<{ funding: FundingRow[]; paid: boolean; total_available?: number; activation?: Activation }>;
+
+declare function runFunding(payFetch: PayFetch$1, args?: FundingArgs, opts?: RunOpts): Promise<FundingResult>;
+declare function runMarketBrief(
+  payFetch: PayFetch$1,
+  args?: BriefArgs,
+  opts?: { hasKey?: boolean }
+): Promise<MarketBriefResult>;
+
 type PayFetch = (url: string) => Promise<Response>;
 
 interface DataToolOptions {
@@ -286,6 +369,29 @@ declare function createBaseTokenBalance(opts?: DataToolOptions): ai.Tool<{
     address: string;
     token?: string | undefined;
 }, TokenBalanceResult>;
+/**
+ * Vercel AI SDK tool: cross-venue perp funding rates via Grey Ridge
+ * `/crypto/funding` ($0.004 USDC/call, paid inline with x402 — no API key).
+ * Returns top coins by 24h notional volume with per-venue (Hyperliquid/OKX/dYdX)
+ * funding, the arb spread (bps), cheapest-long/richest-short venue, premium/basis,
+ * annualized rates, a LONGS_PAY/SHORTS_PAY/NEUTRAL signal, next funding time,
+ * mark/oracle prices and open interest. Degrades OPEN to a free real top-1 sample
+ * when no funded wallet is configured. Use to find a funding-rate arbitrage or
+ * to read market positioning before a perp trade.
+ */
+declare function createCryptoFunding(opts?: DataToolOptions): ai.Tool<{
+    limit?: number;
+}, FundingResult>;
+/**
+ * Vercel AI SDK tool: one-call crypto market brief via Grey Ridge
+ * `/brief/market` ($0.01 USDC/call, paid inline with x402 — no API key). Returns
+ * the Fear & Greed index, global market cap / 24h volume / BTC+ETH dominance, the
+ * top 5 gainers and losers, trending coins and the top DeFi fee earners — a full
+ * market snapshot in a single payment. There is no free preview for this
+ * composite route, so a keyless install returns an activation hint (never a
+ * fabricated brief) rather than silently failing.
+ */
+declare function createMarketBrief(opts?: DataToolOptions): ai.Tool<{}, MarketBriefResult>;
 /** Zero-config tool instances: read `PRIVATE_KEY` (agent wallet) + optional `X402_DATA_BASE_URL` from env. */
 declare const defiYields: ai.Tool<{
     limit?: number;
@@ -306,7 +412,11 @@ declare const baseTokenBalance: ai.Tool<{
     address: string;
     token?: string | undefined;
 }, TokenBalanceResult>;
-/** All six data tools as a ready-to-spread toolset: `tools: { ...defiDataTools }`. */
+declare const cryptoFunding: ai.Tool<{
+    limit?: number;
+}, FundingResult>;
+declare const marketBrief: ai.Tool<{}, MarketBriefResult>;
+/** All eight data tools as a ready-to-spread toolset: `tools: { ...defiDataTools }`. */
 declare const defiDataTools: {
     defiYields: ai.Tool<{
         limit?: number;
@@ -327,6 +437,10 @@ declare const defiDataTools: {
         address: string;
         token?: string | undefined;
     }, TokenBalanceResult>;
+    cryptoFunding: ai.Tool<{
+        limit?: number;
+    }, FundingResult>;
+    marketBrief: ai.Tool<{}, MarketBriefResult>;
 };
 
-export { type Activation, BASE_USDC, type BalanceArgs, type BalanceResponse, type BalanceResult, type BlockNumberResponse, type BlockNumberResult, DATA_BASE, type DataToolOptions, type GasPriceResponse, type GasPriceResult, type PricesArgs, type PricesResult, type ReadArgs, type TokenBalanceArgs, type TokenBalanceResponse, type TokenBalanceResult, type TokenPrice, type YieldArgs, type YieldPool, type YieldsResult, baseBalance, baseBlockNumber, baseGasPrice, baseTokenBalance, buildBalanceUrl, buildBlockNumberPreviewUrl, buildBlockNumberUrl, buildGasPricePreviewUrl, buildGasPriceUrl, buildPricesPreviewUrl, buildPricesUrl, buildTokenBalancePreviewUrl, buildTokenBalanceUrl, buildYieldsPreviewUrl, buildYieldsUrl, createBaseBalance, createBaseBlockNumber, createBaseGasPrice, createBaseTokenBalance, createCryptoPrices, createDefiYields, cryptoPrices, defiDataTools as default, defiDataTools, defiYields, fetchPricesOrPreview, fetchYieldsOrPreview, fundOnrampHint, normalizeCoins, runBalance, runBlockNumber, runGasPrice, runPrices, runTokenBalance, runYields, summarizeBalance, summarizeBlockNumber, summarizeGasPrice, summarizePrices, summarizeTokenBalance, summarizeYields };
+export { type Activation, BASE_USDC, type BalanceArgs, type BalanceResponse, type BalanceResult, type BlockNumberResponse, type BlockNumberResult, type BriefArgs, DATA_BASE, type DataToolOptions, type FundingArgs, type FundingResult, type FundingRow, type GasPriceResponse, type GasPriceResult, type MarketBriefResponse, type MarketBriefResult, type PricesArgs, type PricesResult, type ReadArgs, type TokenBalanceArgs, type TokenBalanceResponse, type TokenBalanceResult, type TokenPrice, type YieldArgs, type YieldPool, type YieldsResult, baseBalance, baseBlockNumber, baseGasPrice, baseTokenBalance, buildBalanceUrl, buildBlockNumberPreviewUrl, buildBlockNumberUrl, buildFundingPreviewUrl, buildFundingUrl, buildGasPricePreviewUrl, buildGasPriceUrl, buildMarketBriefUrl, buildPricesPreviewUrl, buildPricesUrl, buildTokenBalancePreviewUrl, buildTokenBalanceUrl, buildYieldsPreviewUrl, buildYieldsUrl, createBaseBalance, createBaseBlockNumber, createBaseGasPrice, createBaseTokenBalance, createCryptoFunding, createCryptoPrices, createDefiYields, createMarketBrief, cryptoFunding, cryptoPrices, defiDataTools as default, defiDataTools, defiYields, fetchFundingOrPreview, fetchPricesOrPreview, fetchYieldsOrPreview, fundOnrampHint, marketBrief, normalizeCoins, runBalance, runBlockNumber, runFunding, runGasPrice, runMarketBrief, runPrices, runTokenBalance, runYields, summarizeBalance, summarizeBlockNumber, summarizeFunding, summarizeGasPrice, summarizeMarketBrief, summarizePrices, summarizeTokenBalance, summarizeYields };
